@@ -492,7 +492,7 @@
     // ── Drag-to-paint (geometry-based, no elementFromPoint) ──────────────
 
     fenceContainer.addEventListener('pointerdown', e => {
-      if (!state.activeColor) return;
+      if (state.activeColor === undefined) return;
       e.preventDefault();
       state.isPainting = true;
       fenceContainer.setPointerCapture(e.pointerId);
