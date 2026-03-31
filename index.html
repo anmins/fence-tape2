@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --diamond-size: 48px;
+      --diamond-size: 32px;
       --wire-color: #8a9199;
       --empty-color: #dde3e8;
       --header-bg: #3d6b4f;
@@ -169,6 +169,12 @@
       color: #b0c8b0;
       font-size: 0.9rem;
     }
+    .dir-tip {
+      font-size: 0.72rem;
+      color: #7a5a2a;
+      font-style: italic;
+      font-weight: 600;
+    }
 
     /* ── Fence grid container ── */
     #fence-container {
@@ -203,6 +209,10 @@
       pointer-events: none;
     }
     .diamond-cell:hover .diamond-visual { filter: brightness(1.12); }
+    .swatch-erase {
+      background: repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 10px 10px !important;
+      border: 1.5px dashed #aaa !important;
+    }
   </style>
 </head>
 <body>
@@ -215,6 +225,8 @@
     <button class="tb-btn" id="shareBtn">Copy Link</button>
     <span id="copiedMsg">Copied!</span>
     <button class="tb-btn" id="downloadBtn">Download PNG</button>
+    <button class="tb-btn" id="zoomOutBtn">−</button>
+    <button class="tb-btn" id="zoomInBtn">+</button>
     <button class="tb-btn" id="clearBtn">Clear</button>
   </div>
 
@@ -228,6 +240,8 @@
     <div class="dir-step"><span class="num">3</span> Set columns to match your fence width (up to 225)</div>
     <span class="dir-sep">·</span>
     <div class="dir-step"><span class="num">4</span> Copy Link to share, or Download PNG to save</div>
+    <span class="dir-sep">·</span>
+    <div class="dir-tip">💡 Single isolated diamonds are hard to implement — best practice is at least 2 adjoining blocks of the same color</div>
   </div>
 
   <div id="fence-container"></div>
@@ -253,7 +267,7 @@
     ];
 
     const state = {
-      rows: 20,
+      rows: 40,
       cols: 36,
       cellColors: {},
       activeColor: PALETTE[0].hex,
@@ -268,6 +282,14 @@
     const copiedMsg      = document.getElementById('copiedMsg');
     const downloadBtn    = document.getElementById('downloadBtn');
     const clearBtn       = document.getElementById('clearBtn');
+    const zoomInBtn      = document.getElementById('zoomInBtn');
+    const zoomOutBtn     = document.getElementById('zoomOutBtn');
+    const ZOOM_STEPS     = [16, 20, 24, 28, 32, 36, 40, 48, 56];
+    function setZoom(newD) {
+      D   = newD;
+      PAD = Math.round(D * 0.6);
+      document.documentElement.style.setProperty('--diamond-size', D + 'px');
+    }
 
     // ── URL encode / decode ───────────────────────────────────────────────
 
@@ -321,8 +343,8 @@
 
     // ── Grid ──────────────────────────────────────────────────────────────
     // D must match --diamond-size. PAD must match the fence-container padding multiplier.
-    const D   = 48;
-    const PAD = Math.round(D * 0.6);
+    let D   = 32;
+    let PAD = Math.round(D * 0.6);
     const cellEls = {}; // "r,c" → .diamond-cell DOM element for fast paint lookup
 
     function buildGrid() {
@@ -377,10 +399,17 @@
       if (!best || bestDist > D * 0.45) return;
 
       const key = best.r + ',' + best.c;
-      if (state.cellColors[key] === state.activeColor) return; // no-op if already this color
-      state.cellColors[key] = state.activeColor;
       const el = cellEls[key];
-      if (el) el.firstChild.style.background = state.activeColor;
+      if (state.activeColor === null) {
+        // Erase mode
+        if (!state.cellColors[key]) return;
+        delete state.cellColors[key];
+        if (el) el.firstChild.style.background = '';
+      } else {
+        if (state.cellColors[key] === state.activeColor) return;
+        state.cellColors[key] = state.activeColor;
+        if (el) el.firstChild.style.background = state.activeColor;
+      }
     }
 
     function clearGrid() {
@@ -393,13 +422,17 @@
 
     function renderPalette() {
       paletteBar.innerHTML = '';
-      PALETTE.forEach(({ name, hex }) => {
+      const allSwatches = [
+        ...PALETTE.map(p => ({ name: p.name, hex: p.hex })),
+        { name: 'Erase', hex: null },
+      ];
+      allSwatches.forEach(({ name, hex }) => {
         const wrap = document.createElement('div');
         wrap.className = 'swatch-wrap' + (hex === state.activeColor ? ' active' : '');
 
         const sw = document.createElement('div');
-        sw.className = 'swatch';
-        sw.style.background = hex;
+        sw.className = 'swatch' + (hex === null ? ' swatch-erase' : '');
+        if (hex) sw.style.background = hex;
 
         const label = document.createElement('div');
         label.className = 'swatch-name';
@@ -487,6 +520,8 @@
 
     clearBtn.addEventListener('click', clearGrid);
     downloadBtn.addEventListener('click', downloadPNG);
+    zoomInBtn.addEventListener('click',  () => { const i = ZOOM_STEPS.indexOf(D); if (i < ZOOM_STEPS.length - 1) setZoom(ZOOM_STEPS[i + 1]); });
+    zoomOutBtn.addEventListener('click', () => { const i = ZOOM_STEPS.indexOf(D); if (i > 0) setZoom(ZOOM_STEPS[i - 1]); });
 
     shareBtn.addEventListener('click', () => {
       navigator.clipboard.writeText(window.location.href).then(() => {
