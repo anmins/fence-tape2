@@ -209,6 +209,28 @@
       pointer-events: none;
     }
     .diamond-cell:hover .diamond-visual { filter: brightness(1.12); }
+
+    /* ── Stats panel ── */
+    #stats-panel {
+      background: #f5efe6;
+      border-bottom: 2px solid #ddd0c4;
+      padding: 8px 14px;
+      flex-shrink: 0;
+      overflow-x: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .stat-row {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 0.78rem; font-weight: 700; color: #3a2e24;
+      white-space: nowrap;
+    }
+    .stat-swatch { width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.15); flex-shrink: 0; }
+    .stat-bar-wrap { width: 60px; height: 8px; background: #ddd0c4; border-radius: 4px; overflow: hidden; }
+    .stat-bar { height: 100%; border-radius: 4px; }
+
     .swatch-erase {
       background: repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 10px 10px !important;
       border: 1.5px dashed #aaa !important;
@@ -228,6 +250,7 @@
     <button class="tb-btn" id="zoomOutBtn">−</button>
     <button class="tb-btn" id="zoomInBtn">+</button>
     <button class="tb-btn" id="clearBtn">Clear</button>
+    <button class="tb-btn" id="statsBtn">% Colors</button>
   </div>
 
   <div id="palette-bar"></div>
@@ -243,6 +266,8 @@
     <span class="dir-sep">·</span>
     <div class="dir-tip">💡 Single isolated diamonds are hard to implement — best practice is at least 2 adjoining blocks of the same color</div>
   </div>
+
+  <div id="stats-panel" hidden><div id="stats-rows" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;"></div></div>
 
   <div id="fence-container"></div>
 
@@ -291,38 +316,81 @@
       document.documentElement.style.setProperty('--diamond-size', D + 'px');
     }
 
-    // ── URL encode / decode ───────────────────────────────────────────────
+    // ── URL encode / decode (RLE) ─────────────────────────────────────────
+    // Format: "{cols}x{rows}/v{rle}"
+    // RLE: runs of "{colorChar}{decimalCount}" concatenated.
+    //   colorChar: '-' = empty, 'a'-'p' = PALETTE indices 0-15.
+    //   Because '-' and 'a'-'p' are never decimal digits, the parser is unambiguous.
+    // A fully-painted 225×40 grid encodes to ~10-200 chars vs the old 9000-char flat format.
 
     function encodeState() {
-      let cells = '';
-      for (let r = 0; r < state.rows; r++) {
+      const getChar = key => {
+        const color = state.cellColors[key];
+        if (!color) return '-';
+        const idx = PALETTE.findIndex(p => p.hex.toUpperCase() === color.toUpperCase());
+        return idx === -1 ? '-' : String.fromCharCode(97 + idx); // 'a'-'p'
+      };
+
+      let rle = '', prevCh = null, count = 0;
+      const flush = () => { if (prevCh !== null) rle += prevCh + count; };
+
+      for (let r = 0; r < state.rows; r++)
         for (let c = 0; c < state.cols; c++) {
-          const color = state.cellColors[r + ',' + c];
-          if (!color) { cells += '0'; continue; }
-          const idx = PALETTE.findIndex(p => p.hex.toUpperCase() === color.toUpperCase());
-          if (idx === -1) { cells += '0'; continue; }
-          const code = idx + 1;
-          cells += code < 10 ? String(code) : String.fromCharCode(87 + code);
+          const ch = getChar(r + ',' + c);
+          if (ch === prevCh) { count++; } else { flush(); prevCh = ch; count = 1; }
         }
-      }
-      return state.cols + '/' + cells.replace(/0+$/, '');
+      flush();
+
+      // Trim trailing empty runs — they can be inferred from cols×rows
+      rle = rle.replace(/([-]\d+)+$/, '');
+
+      return state.cols + 'x' + state.rows + '/v' + rle;
     }
 
     function decodeState(hash) {
       const str = hash.replace(/^#/, '');
+
+      // ── New RLE format ──────────────────────────────────────────────────
+      const m = str.match(/^(\d+)x(\d+)\/v(.*)/s);
+      if (m) {
+        const cols = parseInt(m[1], 10), encodedRows = parseInt(m[2], 10);
+        if (isNaN(cols) || cols < 1 || cols > 225) return false;
+        state.cols = cols;
+        colsSlider.value = cols;
+        colsDisplay.textContent = cols;
+        state.cellColors = {};
+
+        const rle = m[3];
+        let cellIdx = 0, i = 0;
+        while (i < rle.length) {
+          const ch = rle[i++];
+          let lenStr = '';
+          while (i < rle.length && rle[i] >= '0' && rle[i] <= '9') lenStr += rle[i++];
+          const len = parseInt(lenStr || '1', 10);
+          const pIdx = ch === '-' ? -1 : ch.charCodeAt(0) - 97;
+          const color = pIdx >= 0 && PALETTE[pIdx] ? PALETTE[pIdx].hex : null;
+          for (let j = 0; j < len; j++, cellIdx++) {
+            const r = Math.floor(cellIdx / cols);
+            const c = cellIdx % cols;
+            if (r >= Math.min(encodedRows, state.rows)) break;
+            if (color) state.cellColors[r + ',' + c] = color;
+          }
+        }
+        return true;
+      }
+
+      // ── Legacy flat format (backward compat) ────────────────────────────
       const slash = str.indexOf('/');
       if (slash === -1) return false;
       const cols = parseInt(str.slice(0, slash), 10);
       if (isNaN(cols) || cols < 1 || cols > 225) return false;
       const cells = str.slice(slash + 1);
-
       state.cols = cols;
       colsSlider.value = cols;
       colsDisplay.textContent = cols;
       state.cellColors = {};
-
       let i = 0;
-      outer: for (let r = 0; r < state.rows; r++) {
+      outer: for (let r = 0; r < state.rows; r++)
         for (let c = 0; c < state.cols; c++, i++) {
           if (i >= cells.length) break outer;
           const ch = cells[i];
@@ -333,7 +401,6 @@
           else continue;
           if (PALETTE[idx]) state.cellColors[r + ',' + c] = PALETTE[idx].hex;
         }
-      }
       return true;
     }
 
@@ -489,10 +556,49 @@
       a.click();
     }
 
-    // ── Drag-to-paint (geometry-based, no elementFromPoint) ──────────────
+    // ── Stats panel ───────────────────────────────────────────────────────
+
+    function calcStats() {
+      const total = state.rows * state.cols;
+      const counts = {};
+      Object.values(state.cellColors).forEach(hex => {
+        const key = hex.toUpperCase();
+        counts[key] = (counts[key] || 0) + 1;
+      });
+      const filled = Object.values(counts).reduce((s, n) => s + n, 0);
+
+      const statsRows = document.getElementById('stats-rows');
+      statsRows.innerHTML = '';
+
+      PALETTE.forEach(({ name, hex }) => {
+        const n = counts[hex.toUpperCase()] || 0;
+        if (!n) return;
+        const pct = filled > 0 ? ((n / filled) * 100).toFixed(1) : '0.0';
+        const row = document.createElement('div');
+        row.className = 'stat-row';
+        row.innerHTML = `<div class="stat-swatch" style="background:${hex}"></div>
+          <span>${name}</span>
+          <div class="stat-bar-wrap"><div class="stat-bar" style="width:${pct}%;background:${hex}"></div></div>
+          <span>${pct}%</span>`;
+        statsRows.appendChild(row);
+      });
+    }
+
+    // ── Drag-to-paint — 1 finger paints, 2 fingers scroll (iPad) ─────────
+
+    const activePointers = new Map(); // pointerId → {x, y}
+    let scrollMode = false;
 
     fenceContainer.addEventListener('pointerdown', e => {
       if (state.activeColor === undefined) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (activePointers.size >= 2) {
+        scrollMode = true;
+        state.isPainting = false;
+        return;
+      }
+
       e.preventDefault();
       state.isPainting = true;
       fenceContainer.setPointerCapture(e.pointerId);
@@ -500,14 +606,29 @@
     });
 
     fenceContainer.addEventListener('pointermove', e => {
+      if (scrollMode && activePointers.has(e.pointerId)) {
+        const prev = activePointers.get(e.pointerId);
+        fenceContainer.scrollLeft -= e.clientX - prev.x;
+        fenceContainer.scrollTop  -= e.clientY - prev.y;
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        return;
+      }
       if (!state.isPainting) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       paintAt(e.clientX, e.clientY);
     });
 
-    fenceContainer.addEventListener('pointerup', () => {
-      if (state.isPainting) { state.isPainting = false; updateURL(); }
+    fenceContainer.addEventListener('pointerup', e => {
+      activePointers.delete(e.pointerId);
+      if (activePointers.size === 0) {
+        scrollMode = false;
+        if (state.isPainting) { state.isPainting = false; updateURL(); }
+      }
     });
-    fenceContainer.addEventListener('pointercancel', () => { state.isPainting = false; });
+    fenceContainer.addEventListener('pointercancel', e => {
+      activePointers.delete(e.pointerId);
+      if (activePointers.size === 0) { scrollMode = false; state.isPainting = false; }
+    });
 
     // ── Controls ──────────────────────────────────────────────────────────
 
@@ -519,6 +640,13 @@
     });
 
     clearBtn.addEventListener('click', clearGrid);
+
+    const statsBtn = document.getElementById('statsBtn');
+    const statsPanel = document.getElementById('stats-panel');
+    statsBtn.addEventListener('click', () => {
+      if (statsPanel.hidden) { calcStats(); statsPanel.hidden = false; }
+      else { statsPanel.hidden = true; }
+    });
     downloadBtn.addEventListener('click', downloadPNG);
     zoomInBtn.addEventListener('click',  () => { const i = ZOOM_STEPS.indexOf(D); if (i < ZOOM_STEPS.length - 1) setZoom(ZOOM_STEPS[i + 1]); });
     zoomOutBtn.addEventListener('click', () => { const i = ZOOM_STEPS.indexOf(D); if (i > 0) setZoom(ZOOM_STEPS[i - 1]); });
